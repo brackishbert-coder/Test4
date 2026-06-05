@@ -2,13 +2,10 @@ package test4;
 
 
 
-import java.awt.*;
-import java.awt.image.BufferedImage;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.net.Socket;
-import java.util.Arrays;
 
 /**
  * Feature-based vectorizer with fixed 16×16 output.

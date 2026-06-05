@@ -2,24 +2,14 @@ package test4;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
-import java.awt.Dimension;
-import java.awt.GridLayout;
-import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
 import javax.swing.JFrame;
-import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 
 import game.BoardUtils;
 import game.VectorMoveValidator;
-import game.tile;
-import vectorization.vector;
 
 public class ReversableSOMVisualizer extends JFrame {
 

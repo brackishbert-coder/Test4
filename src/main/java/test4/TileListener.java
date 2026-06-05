@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import game.BoardUtils;
 import game.tile;
 
 public class TileListener implements Runnable {

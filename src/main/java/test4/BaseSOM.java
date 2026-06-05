@@ -1,10 +1,8 @@
 package test4;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
+import game.LegalMoveLibrary;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -35,8 +33,8 @@ public class BaseSOM {
         this.height = height;
         this.inputDimension = inputDimension;
         this.metric = metric;
-		this.path = path;
-		this.uName = uName;
+		this.setPath("");
+		this.setuName("SOMUNAME");
         this.metricName = metric.getName();
         this.weights = new double[width][height][inputDimension];
         this.warpTrails = new ArrayList<>();
@@ -163,13 +161,13 @@ public static BaseSOM loadFromJson(File file) throws IOException {
 
     /** Original update (default reward = 1) */
     public BMUResult update(double[] input, double learningRate) {
-        this.learningRate = learningRate;
+        this.setLearningRate(learningRate);
 		return update(input, learningRate, 1.0);
     }
 
     /** New update with reward feedback (-1 to +1) */
     public BMUResult update(double[] input, double learningRate, double reward) {
-        this.learningRate = learningRate;
+        this.setLearningRate(learningRate);
 		// smooth reward history for stability
         double adjustedReward = (rewardMomentum * lastReward) + ((1 - rewardMomentum) * reward);
         lastReward = adjustedReward;
@@ -278,4 +276,34 @@ public static BaseSOM loadFromJson(File file) throws IOException {
                 copy[i][j] = Arrays.copyOf(weights[i][j], inputDimension);
         return copy;
     }
+
+
+	public double getLearningRate() {
+		return learningRate;
+	}
+
+
+	public void setLearningRate(double learningRate) {
+		this.learningRate = learningRate;
+	}
+
+
+	public String getuName() {
+		return uName;
+	}
+
+
+	public void setuName(String uName) {
+		this.uName = uName;
+	}
+
+
+	public String getPath() {
+		return path;
+	}
+
+
+	public void setPath(String path) {
+		this.path = path;
+	}
 }
