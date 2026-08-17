@@ -18,7 +18,7 @@ public class MetaSOM {
     private final int height;
     private int representationDimension;
     private final double[][][] weights;
-    private static Map<BaseSOM, int[]> baseSOMPositions;
+    private Map<BaseSOM, int[]> baseSOMPositions;
     private final List<MetaWarpTrail> metaWarpTrails;
     private final DistanceMetric metaMetric;
     private final Random random;
@@ -26,7 +26,7 @@ public class MetaSOM {
 	private static String homePath = "/home/wes/tv/test4/som/";
 	private String uName;
 	// Track all BaseSOMs that this MetaSOM manages
-	private  static List<BaseSOM> baseSOMList = new ArrayList<>();
+	private  List<BaseSOM> baseSOMList = new ArrayList<>();
 
     public MetaSOM(int width, int height, int representationDimension, boolean hasReward,String uName) {
         this.width = width;

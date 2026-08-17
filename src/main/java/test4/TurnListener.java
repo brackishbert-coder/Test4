@@ -22,8 +22,8 @@ public class TurnListener implements Runnable {
                      ObjectInputStream in = new ObjectInputStream(s.getInputStream())) {
                     Object obj = in.readObject();
                     if (obj instanceof Boolean) {
+                        isWhitsTurn = (Boolean) obj;            // so getTurn() reflects the real turn
                         BoardUtils.isWhiteTurn = (Boolean) obj;
-                        
                     }
                 } catch (Exception e) {
                     e.printStackTrace();

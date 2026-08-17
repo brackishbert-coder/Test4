@@ -28,10 +28,21 @@ public class ReversibleSOMHierarchy {
      * Single-threaded to preserve update order; bump the pool size
      * if you want more parallelism across SOMs.
      */
-	private final ExecutorService asyncExecutor =
-	        Executors.newFixedThreadPool(
-	            Math.max(2, Runtime.getRuntime().availableProcessors() / 2)
-	        );
+	private final ExecutorService asyncExecutor = newBoundedLearningExecutor();
+
+	/**
+	 * Bounded learning pool: a tiny waiting line and a drop-the-stalest policy,
+	 * so learning can never build a backlog that trails the turn. If processing
+	 * falls behind, the oldest queued work is dropped to keep learning current.
+	 */
+	private static ExecutorService newBoundedLearningExecutor() {
+	    int threads = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
+	    return new java.util.concurrent.ThreadPoolExecutor(
+	            threads, threads,
+	            0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+	            new java.util.concurrent.ArrayBlockingQueue<Runnable>(2),
+	            new java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy());
+	}
 	private String path;
     
     public ReversibleSOMHierarchy(String path,String uniquename) {

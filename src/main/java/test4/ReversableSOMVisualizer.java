@@ -2,8 +2,13 @@ package test4;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.FlowLayout;
 import java.io.IOException;
+import javax.swing.JCheckBox;
 import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JSlider;
 import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
@@ -21,10 +26,30 @@ public class ReversableSOMVisualizer extends JFrame {
 	private static TileListener tileListener;
 	static double exploration = 0.0; // 0.0 = no wandering, 1.0 = full chaos
 	private static MultiPanelVisualization whiteMultiPanel;
-	private static String homePath = "/home/wes/tv/test4/som/";
+	// SOM persistence dir, relative to the working directory (the test4 project dir
+	// in dev; the bundled app dir once packaged, where som/ ships alongside). Was a
+	// hard-coded /home/wes/tv/... absolute path that existed on no other machine and
+	// didn't even match this checkout, so the meta SOM silently failed to load.
+	private static String homePath = "som/";
 	private static ReversibleSOMHierarchy blackSomHierarchy;
 	private static MultiPanelVisualization blackMultiPanel;
 	private static TurnListener turnListener;
+	// When ON (default), the SOMs keep learning across games — the original design.
+	// When OFF, both maps reset to fresh at the start of every new game. UI toggled.
+	private static volatile boolean persistBetweenGames = true;
+	private static boolean wasAtStart = true;
+	private static String lastBoardSig = null;
+	// The per-colour meta maps, rebuilt as adjudicating parliaments (5 witnesses each).
+	private static final Parliament whiteParliament = new Parliament(5);
+	private static final Parliament blackParliament = new Parliament(5);
+	private static long lastGenMs = 0L;
+	private static final long GEN_INTERVAL_MS = 120;
+	// OFF by default: each side learns from the moves it actually plays. ON also
+	// trains from the camera feature vector on port 5010 (the old pipeline).
+	private static volatile boolean useCameraInput = false;
+	// Per-tick console logging (board snapshot, input line). Off keeps it fast —
+	// console I/O at the 5ms tick rate is a real bottleneck.
+	private static final boolean VERBOSE = false;
 
 	public static void main(String[] args) {
 		ReversableSOMVisualizer app = new ReversableSOMVisualizer();
@@ -53,6 +78,42 @@ public class ReversableSOMVisualizer extends JFrame {
 		JTabbedPane comp = new JTabbedPane();
 		comp.add("WHITE",whiteMultiPanel);
 		comp.add("BLACK",blackMultiPanel);
+
+		// Control bar: persist-between-games toggle (checked = original behavior).
+		JCheckBox persistBox = new JCheckBox("Persist SOM between games", persistBetweenGames);
+		persistBox.setToolTipText("Checked: the maps keep learning across games. "
+				+ "Unchecked: both maps reset to fresh at the start of every new game.");
+		persistBox.addItemListener(e -> persistBetweenGames = persistBox.isSelected());
+		JCheckBox cameraBox = new JCheckBox("Camera feature input", useCameraInput);
+		cameraBox.setToolTipText("Off (default): each side learns from the moves it actually plays. "
+				+ "On: also train from the camera feature vector on port 5010 (the old pipeline).");
+		cameraBox.addItemListener(e -> useCameraInput = cameraBox.isSelected());
+		JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT));
+		controls.add(persistBox);
+		controls.add(cameraBox);
+
+		controls.add(new JLabel("   noise"));
+		JSlider noiseSlider = new JSlider(0, 150, 30);   // 0.000–0.150, default 0.030
+		noiseSlider.setToolTipText("Exploration noise on the chosen move, scaled by how much the metrics disagree.");
+		noiseSlider.addChangeListener(e -> {
+			double v = noiseSlider.getValue() / 1000.0;
+			whiteParliament.setNoise(v);
+			blackParliament.setNoise(v);
+		});
+		controls.add(noiseSlider);
+
+		controls.add(new JLabel("   vote softness"));
+		JSlider tempSlider = new JSlider(0, 200, 60);    // 0.00–2.00, default 0.60
+		tempSlider.setToolTipText("How loosely the parliament picks among supported moves. Higher is more exploratory, lower is more decisive.");
+		tempSlider.addChangeListener(e -> {
+			double v = tempSlider.getValue() / 100.0;
+			whiteParliament.setTemperature(v);
+			blackParliament.setTemperature(v);
+		});
+		controls.add(tempSlider);
+
+		add(controls, BorderLayout.NORTH);
+
 		add(comp, BorderLayout.CENTER);
 
 		// Setup update timer
@@ -120,7 +181,35 @@ public class ReversableSOMVisualizer extends JFrame {
 	private static void updateSystem() {
 
 			if (tileListener.getTiles() != null && tileListener.getTiles().size()>0) {
-				synchronized (tileListener.getTiles()) {
+				maybeResetOnNewGame(tileListener.getTiles());
+				maybeSaveOnMove(tileListener.getTiles());
+
+				// --- Parliament: the move now comes from the side-to-move's meta map ---
+				long nowGen = System.currentTimeMillis();
+				if (nowGen - lastGenMs >= GEN_INTERVAL_MS) {
+					lastGenMs = nowGen;
+					boolean whiteToMove = Boolean.TRUE.equals(turnListener.getTurn());
+					Parliament parliament = whiteToMove ? whiteParliament : blackParliament;
+					java.util.List<BaseSOM> witnesses =
+							whiteToMove ? whiteSomHierarchy.getBaseSOMList() : blackSomHierarchy.getBaseSOMList();
+					game.LegalMoveLibrary.setBoard((java.util.ArrayList<game.tile>) tileListener.getTiles()); // sync live board so legal moves are real
+						double[] decided = parliament.decide(witnesses, whiteToMove, 8, 8);
+						System.out.println("[PARL] turn=" + (whiteToMove ? "W" : "B")
+								+ " tiles=" + tileListener.getTiles().size()
+								+ " legal=" + game.LegalMoveLibrary.getAllLegalMovesSynced(whiteToMove).size()
+								+ " decided=" + (decided == null ? "NONE" : (decided[0] + "," + decided[1] + "->" + decided[2] + "," + decided[3])));
+					if (decided != null) {
+						VectorServerQueue.push(decided);
+							// Learn from our own play: the side to move trains on the move it chose.
+							double playReward = VectorMoveValidator.evaluateMove(decided, 8, 8, false);
+							double[] playMeta = buildMetaInput(decided, playReward);
+							ReversibleSOMHierarchy learner = whiteToMove ? whiteSomHierarchy : blackSomHierarchy;
+							learner.processInputAsync(playMeta, playReward);
+							learner.getMetaSOM().train(playMeta, 0.1, 2.0);
+					}
+				}
+
+				if (VERBOSE) synchronized (tileListener.getTiles()) {
 					
 					System.out.println("A)Current board snapshot:");
 					for (int y = 0; y < 8; y++) {
@@ -131,10 +220,10 @@ public class ReversableSOMVisualizer extends JFrame {
 					}
 				}
 				double[] input = clientVectorizer.getFeatureVector();
-				System.out.println("input send: "+input[0]+" "+input[1]+" "+input[2]+" "+input[3]+" Legal: "+VectorMoveValidator.isLegalMove(input,false)+(turnListener.getTurn()?" is White "+BoardUtils.isWhitePiece(input) :" is Black "+BoardUtils.isBlackPiece(input) ) );
+				if (VERBOSE) System.out.println("input send: "+input[0]+" "+input[1]+" "+input[2]+" "+input[3]+" Legal: "+VectorMoveValidator.isLegalMove(input,false)+(turnListener.getTurn()?" is White "+BoardUtils.isWhitePiece(input) :" is Black "+BoardUtils.isBlackPiece(input) ) );
 				
 				
-				if(BoardUtils.isWhitePiece(input)) {
+				if(useCameraInput && BoardUtils.isWhitePiece(input)) {
 				double reward = VectorMoveValidator.evaluateMove(input, WIDTH, HEIGHT, false);
 				
 					double[] metaInput = buildMetaInput(input, reward);
@@ -142,18 +231,13 @@ public class ReversableSOMVisualizer extends JFrame {
 
 					whiteSomHierarchy.getMetaSOM().train(metaInput, 0.1, 2.0);
 
-					try {
-						whiteSomHierarchy.getMetaSOM().saveToJson(homePath,"meta_som_reversible","white");
-						blackSomHierarchy.getMetaSOM().saveToJson(homePath,"meta_som_reversible","black");
-					} catch (IOException e) {
-						System.out.println("Failed to save Meta SOM: " + e.getMessage());
-					}
+					// Meta-SOM saving moved to saveSoms() — fired once per successful move
 
 					System.out.println("white metaInput send: "+metaInput[0]+" "+metaInput[1]+" "+metaInput[2]+" "+metaInput[3]+" Legal: "+VectorMoveValidator.isLegalMove(metaInput,false)+(turnListener.getTurn() ?" is White "+BoardUtils.isWhitePiece(metaInput) :" is Black "+BoardUtils.isBlackPiece(metaInput) ) );
 					
 					System.out.println("WHITE");
-					VectorServerQueue.push(metaInput);
-				}else if(BoardUtils.isBlackPiece(input)) {
+					// move emission is the parliament's job now (see the generation block below)
+				}else if(useCameraInput && BoardUtils.isBlackPiece(input)) {
 					double reward = VectorMoveValidator.evaluateMove(input, WIDTH, HEIGHT, false);
 					
 					double[] metaInput = buildMetaInput(input, reward);
@@ -162,16 +246,11 @@ public class ReversableSOMVisualizer extends JFrame {
 					blackSomHierarchy.getMetaSOM().train(metaInput, 0.1, 2.0);
 
 					
-					try {
-						whiteSomHierarchy.getMetaSOM().saveToJson(homePath,"meta_som_reversible","white");
-						blackSomHierarchy.getMetaSOM().saveToJson(homePath,"meta_som_reversible","black");
-					} catch (IOException e) {
-						System.out.println("Failed to save Meta SOM: " + e.getMessage());
-					}
+					// Meta-SOM saving moved to saveSoms() — fired once per successful move
 					System.out.println("black metaInput send: "+metaInput[0]+" "+metaInput[1]+" "+metaInput[2]+" "+metaInput[3]+" Legal: "+VectorMoveValidator.isLegalMove(metaInput,false)+(BoardUtils.isWhiteTurn?" is White "+BoardUtils.isWhitePiece(metaInput) :" is Black "+BoardUtils.isBlackPiece(metaInput) ) );
 					System.out.println("BLACK");
 					
-					VectorServerQueue.push(metaInput);
+					// move emission is the parliament's job now (see the generation block below)
 				}
 				
 				
@@ -193,6 +272,63 @@ public class ReversableSOMVisualizer extends JFrame {
 			whiteMultiPanel.updateVisualization(whiteSomHierarchy.getBaseSOMList(), whiteSomHierarchy.getMetaSOM())
 	);
 	}
+
+	/**
+	 * Detects the start of a new game from the incoming board and, when persistence
+	 * is OFF, resets both SOM hierarchies. A freshly reset board has all four middle
+	 * ranks empty; the very first move of any game breaks that, so the transition
+	 * back to "all middle ranks empty" marks a new game beginning.
+	 */
+	private static void maybeResetOnNewGame(java.util.List<game.tile> tiles) {
+		boolean atStart = isStartingPosition(tiles);
+		if (atStart && !wasAtStart) {
+			if (!persistBetweenGames) {
+				whiteSomHierarchy.reset();
+				blackSomHierarchy.reset();
+				System.out.println("[SOM] new game detected — maps RESET (persist OFF)");
+			} else {
+				System.out.println("[SOM] new game detected — maps KEPT (persist ON)");
+			}
+		}
+		wasAtStart = atStart;
+	}
+
+	private static boolean isStartingPosition(java.util.List<game.tile> tiles) {
+		if (tiles == null || tiles.size() < 64) return false;
+		for (int y = 2; y <= 5; y++) {
+			for (int x = 0; x < 8; x++) {
+				char p = tiles.get(y * 8 + x).getPiece();
+				if (p != ' ' && p != '.' && p != ' ') return false;
+			}
+		}
+		return true;
+	}
+
+	/** Save both maps once, only when a move actually changes the board. */
+	private static void maybeSaveOnMove(java.util.List<game.tile> tiles) {
+		String sig = boardSignature(tiles);
+		if (lastBoardSig != null && !sig.equals(lastBoardSig)) {
+			saveSoms();   // the one board changed — a move landed — persist the maps
+		}
+		lastBoardSig = sig;
+	}
+
+	private static String boardSignature(java.util.List<game.tile> tiles) {
+		if (tiles == null) return "";
+		StringBuilder sb = new StringBuilder(tiles.size());
+		for (game.tile t : tiles) sb.append(t.getPiece());
+		return sb.toString();
+	}
+
+	private static void saveSoms() {
+		try {
+			whiteSomHierarchy.getMetaSOM().saveToJson(homePath, "meta_som_reversible", "white");
+			blackSomHierarchy.getMetaSOM().saveToJson(homePath, "meta_som_reversible", "black");
+		} catch (IOException e) {
+			System.out.println("Failed to save Meta SOM: " + e.getMessage());
+		}
+	}
+
 	public void loadEverythingAndRefresh(String dir, String fileName, String uName,ReversibleSOMHierarchy hierarchy) {
 	    try {
 	        System.out.println("\n=== LOADING META + BASE SOMs ===");
