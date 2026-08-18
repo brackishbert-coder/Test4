@@ -70,9 +70,22 @@ public void saveToJson(File file) throws IOException {
     }
     root.put("weights", wArray);
 
-    // write file
-    try (FileWriter fw = new FileWriter(file)) {
+    // Write to a sibling temp file and rename it into place. Writing straight to `file`
+    // truncates it the instant the stream opens, so anything that stops the JVM during
+    // the ~1.8MB write (crash, kill, closing the app) leaves a half-written .json behind.
+    // The next startup then fails parsing it, which kills the load and leaves the SOM
+    // untrained. A rename is atomic, so the file on disk is always a complete save.
+    java.nio.file.Path target = file.toPath();
+    java.nio.file.Path tmp = target.resolveSibling(file.getName() + ".tmp");
+    try (FileWriter fw = new FileWriter(tmp.toFile())) {
         fw.write(root.toString(2));
+    }
+    try {
+        java.nio.file.Files.move(tmp, target,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+        java.nio.file.Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
     }
     System.out.println("✅ BaseSOM saved: " + file.getAbsolutePath());
 }

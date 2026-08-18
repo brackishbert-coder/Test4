@@ -327,10 +327,20 @@ public void saveToJson(String dir, String fn,String uName) throws IOException {
     }
     root.put("baseSOMPositions", posObj);
 
-    // write meta json
+    // write meta json - temp file then atomic rename, same reasoning as BaseSOM.saveToJson:
+    // a partially written meta json is unparseable and breaks the next startup.
     File metaFile = new File(dir + uName + fn + ".json");
-    try (FileWriter fw = new FileWriter(metaFile)) {
+    java.nio.file.Path metaTarget = metaFile.toPath();
+    java.nio.file.Path metaTmp = metaTarget.resolveSibling(metaFile.getName() + ".tmp");
+    try (FileWriter fw = new FileWriter(metaTmp.toFile())) {
         fw.write(root.toString(2));
+    }
+    try {
+        java.nio.file.Files.move(metaTmp, metaTarget,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+        java.nio.file.Files.move(metaTmp, metaTarget, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
     }
 
     System.out.println("✅ MetaSOM saved: " + metaFile.getAbsolutePath());
@@ -389,7 +399,17 @@ public static MetaSOM loadFromJson(String dir, String fn, String uName) throws I
                 continue;
             }
 
-            BaseSOM som = BaseSOM.loadFromJson(f);
+            BaseSOM som;
+            try {
+                som = BaseSOM.loadFromJson(f);
+            } catch (RuntimeException | IOException e) {
+                // One unreadable file used to abort the whole load, which killed main()
+                // while the socket listeners stayed up - test4 then served an untrained
+                // model and looked alive. Skip it instead, and let the count below show
+                // that the MetaSOM came up short.
+                System.err.println("⚠ Unreadable BaseSOM file (skipping): " + f + " - " + e);
+                continue;
+            }
             meta.baseSOMList.add(som);
             meta.baseSOMPositions.put(som, new int[]{px, py});
         }

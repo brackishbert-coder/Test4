@@ -52,10 +52,21 @@ public class ReversableSOMVisualizer extends JFrame {
 	private static final boolean VERBOSE = false;
 
 	public static void main(String[] args) {
-		ReversableSOMVisualizer app = new ReversableSOMVisualizer();
-		app.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-		app.setSize(1200, 800);
-		app.setVisible(true);
+		try {
+			ReversableSOMVisualizer app = new ReversableSOMVisualizer();
+			app.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+			app.setSize(1200, 800);
+			app.setVisible(true);
+		} catch (Throwable t) {
+			// The constructor starts the tile/vector/turn listeners before it loads the
+			// SOMs. Those threads are non-daemon, so a throw here used to leave the JVM
+			// alive serving port 5020 from a half-built model - the board kept playing
+			// and nothing upstream could tell that test4 had failed. Fail loudly instead.
+			System.err.println("✖ test4 failed to start; shutting down so nothing plays "
+					+ "against an unloaded model.");
+			t.printStackTrace(System.err);
+			System.exit(1);
+		}
 	}
 
 
@@ -127,8 +138,15 @@ public class ReversableSOMVisualizer extends JFrame {
 		try {
 			whiteSomHierarchy.getMetaSOM().loadFromJson(homePath,"meta_som_reversible","white");
 			blackSomHierarchy.getMetaSOM().loadFromJson(homePath,"meta_som_reversible","black");
-		} catch (IOException e) {
-			System.out.println("Failed to load Meta SOM: " + e.getMessage());
+		} catch (IOException | RuntimeException e) {
+			// RuntimeException matters as much as IOException here: a truncated or
+			// otherwise malformed json raises org.json.JSONException, which extends
+			// RuntimeException, so an IOException-only catch let it escape the
+			// constructor and kill main() while the socket listeners kept serving.
+			// Staying up untrained is survivable - the launcher gates the board on the
+			// "MetaSOM load complete" line, which is not printed on this path, so
+			// nothing downstream will start against an unloaded model.
+			System.err.println("✖ Failed to load Meta SOM (continuing UNTRAINED): " + e);
 		}
 		repaintPanels();
 	}
